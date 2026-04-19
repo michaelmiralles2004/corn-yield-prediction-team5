@@ -39,40 +39,40 @@ def load_raw_data():
     return df
 
 
-def build_scenario_row(
-    base_row: pd.DataFrame,
+def build_scenario_rows(
+    base_rows: pd.DataFrame,
     planting_date: date,
     nitrogen: float,
     irrigation: int,
     nitrogen_treatment: str,
 ) -> pd.DataFrame:
-    row = base_row.copy()
+    rows = base_rows.copy()
 
-    if "plantingDate" in row.columns:
-        row["plantingDate"] = pd.to_datetime(planting_date)
+    if "plantingDate" in rows.columns:
+        rows["plantingDate"] = pd.to_datetime(planting_date)
 
-    if "poundsOfNitrogenPerAcre" in row.columns:
-        row["poundsOfNitrogenPerAcre"] = nitrogen
+    if "poundsOfNitrogenPerAcre" in rows.columns:
+        rows["poundsOfNitrogenPerAcre"] = nitrogen
 
-    if "irrigationProvided" in row.columns:
-        row["irrigationProvided"] = irrigation
+    if "irrigationProvided" in rows.columns:
+        rows["irrigationProvided"] = irrigation
 
-    if "nitrogenTreatment" in row.columns:
-        row["nitrogenTreatment"] = nitrogen_treatment
+    if "nitrogenTreatment" in rows.columns:
+        rows["nitrogenTreatment"] = nitrogen_treatment
 
-    return row
+    return rows
 
 
-def predict_yield(model, row: pd.DataFrame) -> float:
-    X = row.drop(columns=["yieldPerAcre"], errors="ignore")
+def predict_yield(model, rows: pd.DataFrame) -> float:
+    X = rows.drop(columns=["yieldPerAcre"], errors="ignore")
     X = engineer_features(X)
-    pred = model.predict(X)[0]
-    return float(pred)
+    preds = model.predict(X)
+    return float(preds.mean())
 
 
 st.set_page_config(page_title="Corn Yield What-If Tool", layout="wide")
 st.title("🌽 Corn Yield What-If Simulator")
-st.write("Adjust planting date, nitrogen, and irrigation to estimate predicted yield.")
+st.write("Adjust planting date, nitrogen, irrigation, and plot selection to estimate predicted yield.")
 
 try:
     model = load_model()
@@ -88,12 +88,16 @@ except FileNotFoundError:
 
 st.sidebar.header("Inputs")
 
-row_index = st.sidebar.number_input(
-    "Baseline row index",
-    min_value=0,
-    max_value=len(raw_df) - 1,
-    value=0,
-    step=1,
+location_options = ["All"] + sorted(raw_df["location"].dropna().unique().tolist())
+selected_location = st.sidebar.selectbox(
+    "Location",
+    options=location_options,
+)
+
+plot_count_mode = st.sidebar.selectbox(
+    "Number of plots",
+    options=["1", "10", "50", "100", "All"],
+    index=2,
 )
 
 planting_date = st.sidebar.date_input(
@@ -122,10 +126,30 @@ nitrogen_treatment = st.sidebar.selectbox(
     options=["Low", "Medium", "High"],
 )
 
-baseline_row = raw_df.iloc[[row_index]].copy()
+# Filter by location
+if selected_location == "All":
+    filtered_df = raw_df.copy()
+else:
+    filtered_df = raw_df[raw_df["location"] == selected_location].copy()
 
-baseline_df = build_scenario_row(
-    base_row=baseline_row,
+if filtered_df.empty:
+    st.error("No rows found for the selected location.")
+    st.stop()
+
+# Select number of plots
+if plot_count_mode == "All":
+    baseline_rows = filtered_df.copy()
+else:
+    n_plots = min(int(plot_count_mode), len(filtered_df))
+    baseline_rows = filtered_df.sample(n=n_plots, random_state=42).copy()
+
+st.caption(
+    f"Using {len(baseline_rows)} plot(s) from "
+    f"{selected_location if selected_location != 'All' else 'all locations'}."
+)
+
+baseline_df = build_scenario_rows(
+    base_rows=baseline_rows,
     planting_date=planting_date,
     nitrogen=nitrogen,
     irrigation=irrigation,
@@ -138,7 +162,18 @@ st.subheader("Baseline Prediction")
 st.metric("Predicted Yield (bushels/acre)", f"{baseline_pred:.2f}")
 
 with st.expander("See baseline inputs"):
-    st.dataframe(baseline_df, width="stretch")
+    preview_cols = [
+        col for col in [
+            "location",
+            "plantingDate",
+            "poundsOfNitrogenPerAcre",
+            "irrigationProvided",
+            "nitrogenTreatment",
+            "yieldPerAcre",
+        ]
+        if col in baseline_df.columns
+    ]
+    st.dataframe(baseline_df[preview_cols].head(20), width="stretch")
 
 st.divider()
 
@@ -147,10 +182,9 @@ st.subheader("What-If Scenarios")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    earlier_date = planting_date - timedelta(days=14)
-    earlier_df = build_scenario_row(
-        base_row=baseline_row,
-        planting_date=earlier_date,
+    earlier_df = build_scenario_rows(
+        base_rows=baseline_rows,
+        planting_date=planting_date - timedelta(days=14),
         nitrogen=nitrogen,
         irrigation=irrigation,
         nitrogen_treatment=nitrogen_treatment,
@@ -163,8 +197,8 @@ with col1:
     )
 
 with col2:
-    higher_n_df = build_scenario_row(
-        base_row=baseline_row,
+    higher_n_df = build_scenario_rows(
+        base_rows=baseline_rows,
         planting_date=planting_date,
         nitrogen=min(nitrogen + 30, 300),
         irrigation=irrigation,
@@ -178,8 +212,8 @@ with col2:
     )
 
 with col3:
-    irrigated_df = build_scenario_row(
-        base_row=baseline_row,
+    irrigated_df = build_scenario_rows(
+        base_rows=baseline_rows,
         planting_date=planting_date,
         nitrogen=nitrogen,
         irrigation=1,
@@ -224,6 +258,92 @@ st.dataframe(
         "Change vs Baseline": "{:.2f}",
     }),
     width="stretch",
+)
+
+st.divider()
+st.subheader("Nitrogen Response Curve")
+
+nitrogen_values = list(range(0, 301, 10))
+nitrogen_curve_rows = []
+
+for n in nitrogen_values:
+    curve_df = build_scenario_rows(
+        base_rows=baseline_rows,
+        planting_date=planting_date,
+        nitrogen=n,
+        irrigation=irrigation,
+        nitrogen_treatment=nitrogen_treatment,
+    )
+    pred = predict_yield(model, curve_df)
+
+    nitrogen_curve_rows.append({
+        "Nitrogen": n,
+        "Predicted Yield": pred,
+    })
+
+nitrogen_curve_df = pd.DataFrame(nitrogen_curve_rows)
+
+st.line_chart(
+    nitrogen_curve_df,
+    x="Nitrogen",
+    y="Predicted Yield",
+    width="stretch",
+)
+
+best_row = nitrogen_curve_df.loc[nitrogen_curve_df["Predicted Yield"].idxmax()]
+
+st.metric(
+    "Best predicted nitrogen level",
+    f"{int(best_row['Nitrogen'])} lbs/acre",
+    delta=f"Peak predicted yield: {best_row['Predicted Yield']:.2f}"
+)
+
+st.divider()
+st.subheader("Planting Date Response Curve")
+
+date_curve_rows = []
+
+start_date = date(2022, 4, 1)
+end_date = date(2022, 6, 30)
+step_days = 7
+
+current_date = start_date
+while current_date <= end_date:
+    curve_df = build_scenario_rows(
+        base_rows=baseline_rows,
+        planting_date=current_date,
+        nitrogen=nitrogen,
+        irrigation=irrigation,
+        nitrogen_treatment=nitrogen_treatment,
+    )
+    pred = predict_yield(model, curve_df)
+
+    date_curve_rows.append({
+        "Planting Date": current_date,
+        "Predicted Yield": pred,
+    })
+
+    current_date += timedelta(days=step_days)
+
+date_curve_df = pd.DataFrame(date_curve_rows)
+
+st.line_chart(
+    date_curve_df,
+    x="Planting Date",
+    y="Predicted Yield",
+    width="stretch",
+)
+
+best_date_row = date_curve_df.loc[date_curve_df["Predicted Yield"].idxmax()]
+
+st.metric(
+    "Best predicted planting date",
+    best_date_row["Planting Date"].strftime("%Y-%m-%d"),
+    delta=f"Peak predicted yield: {best_date_row['Predicted Yield']:.2f}"
+)
+
+st.caption(
+    "This curve shows how predicted yield changes as planting date shifts while keeping the other selected conditions fixed."
 )
 
 st.caption("Predictions are based on the trained XGBoost pipeline and engineered agronomic features.")
