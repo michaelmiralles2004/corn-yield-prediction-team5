@@ -71,7 +71,7 @@ def predict_yield(model, rows: pd.DataFrame) -> float:
 
 
 st.set_page_config(page_title="Corn Yield What-If Tool", layout="wide")
-st.title("🌽 Corn Yield What-If Simulator")
+st.title(" Corn Predictor")
 st.write("Adjust planting date, nitrogen, irrigation, and plot selection to estimate predicted yield.")
 
 try:
